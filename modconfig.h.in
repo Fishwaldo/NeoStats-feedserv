@@ -1,0 +1,16 @@
+/* modconfig.h.in.  Generated from configure.in by autoheader.  */
+
+/* Enable Debugging */
+#undef DEBUG
+
+/* Version number of package */
+#undef MODULE_VERSION
+
+/* Major Version */
+#undef MODULE_MAJOR
+
+/* Minor Version */
+#undef MODULE_MINOR
+
+/* Revision */
+#undef MODULE_REV

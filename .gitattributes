@@ -1,1 +1,19 @@
 * text=auto !eol
+/ChangeLog -text
+/LICENSE -text
+/Makefile.am -text
+/Makefile.in -text
+/README.feedserv -text
+/README.feedserv.html -text
+/README.feedserv.xml -text
+/RELNOTES -text
+/aclocal.m4 -text
+/configure -text
+/configure.in -text
+/feed.c -text
+/feed.h -text
+/feed_help.c -text
+/html.css -text
+/install-sh -text
+/modconfig.h.in -text
+/modconfigwin32.h -text
