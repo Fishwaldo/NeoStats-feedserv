@@ -30,6 +30,8 @@ static int feed_cmd_add( const CmdParams *cmdparams );
 static int feed_cmd_del( const CmdParams *cmdparams );
 static int feed_set_exclusions_cb( const CmdParams *cmdparams, SET_REASON reason );
 static void FeedDownLoadHandler(void *ptr, int status, char *data, int datasize);
+char *trim (char *tmp);
+
 Bot *feed_bot;
 typedef struct feeddata {
 	mrss_t *mrss;
@@ -96,6 +98,110 @@ ModuleEvent module_events[] =
 	NS_EVENT_END()
 };
 
+static int
+html_trim_check (char *tmp)
+{
+  int i = 0;
+
+  while (*tmp)
+    {
+      if (*tmp == '>')
+	return i;
+      tmp++;
+      i++;
+    }
+
+  return 0;
+}
+
+char *
+html_trim (char *tmp)
+{
+  int i, j, l, len;
+  char *ret;
+
+  tmp = trim (tmp);
+  len = strlen (tmp);
+
+
+  ret = malloc (sizeof (char) * (len + 1));
+
+  for (i = j = 0; i < len; i++)
+    {
+      if (tmp[i] != '<' || !(l = html_trim_check (tmp + i)))
+	ret[j++] = tmp[i];
+      else
+	i += l;
+    }
+
+  ret[j] = 0;
+  free (tmp);
+
+
+  return ret;
+}
+
+char *
+trim (char *tmp)
+{
+  int i = 0;
+  int len, j;
+  char *ret;
+  int q, ok = 0;
+
+  while (tmp[i] == ' ' || tmp[i] == '\t' || tmp[i] == '\r' || tmp[i] == '\n')
+    tmp++;
+
+  i = strlen (tmp);
+  i--;
+
+  while (tmp[i] == ' ' || tmp[i] == '\t' || tmp[i] == '\r' || tmp[i] == '\n')
+    i--;
+
+  tmp[i + 1] = 0;
+
+  len = strlen (tmp);
+
+  if (len > 400)
+    {
+      ok = 1;
+      len = 400;
+    }
+
+  ret = malloc (sizeof (char) * (len + 1 + (ok ? 3 : 0)));
+
+  for (i = j = q = 0; i < len; i++)
+    {
+      if (tmp[i] == '\t' || tmp[i] == ' ' || tmp[i] == '\v' || tmp[i] == '\r'
+	  || tmp[i] == '\n')
+	{
+	  if (!q)
+	    {
+	      q = 1;
+	      ret[j++] = ' ';
+	    }
+	}
+      else
+	{
+	  q = 0;
+	  ret[j++] = tmp[i];
+	}
+    }
+
+  if (ok)
+    {
+      ret[j++] = '.';
+      ret[j++] = '.';
+      ret[j++] = '.';
+    }
+
+  ret[j++] = 0;
+
+  tmp = strdup (ret);
+  free (ret);
+
+  return tmp;
+}
 
 
 /** @brief feed_cmd_list
@@ -288,7 +394,7 @@ static void CheckFeed(feeddata *ptr) {
     {
       irc_chanprivmsg(feed_bot, ptr->channel,"title: %s", item->title);
       irc_chanprivmsg(feed_bot, ptr->channel,"link: %s", item->link);
-      irc_chanprivmsg(feed_bot, ptr->channel,"description: %s", item->description);
+      irc_chanprivmsg(feed_bot, ptr->channel,"description: %s", html_trim(item->description));
       irc_chanprivmsg(feed_bot, ptr->channel,"author: %s", item->author);
       irc_chanprivmsg(feed_bot, ptr->channel,"comments: %s", item->comments);
       irc_chanprivmsg(feed_bot, ptr->channel,"pubDate: %s", item->pubDate);
