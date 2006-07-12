@@ -33,8 +33,10 @@ static void FeedDownLoadHandler(void *ptr, int status, char *data, int datasize)
 Bot *feed_bot;
 typedef struct feeddata {
 	mrss_t *mrss;
+	char *channel;
 } feeddata;
 
+feedcfg feed;
 
 /** Copyright info */
 static const char *feed_copyright[] = {
@@ -171,6 +173,8 @@ static void ScheduleFeeds() {
 	ptr = ns_malloc(sizeof(feeddata));
 	ptr->mrss = NULL;
 	mrss_new(&ptr->mrss);
+	ptr->channel = ns_malloc(MAXCHANLEN);
+	strncpy(ptr->channel, "#neostats", MAXCHANLEN);
 	if (new_transfer("http://slashdot.org/index.rss", NULL, NS_MEMORY, "", ptr, FeedDownLoadHandler) != NS_SUCCESS ) {
 		nlog(LOG_WARNING, "Download Feed Failed");
 		irc_chanalert(feed_bot, "Download Feed Failed");
@@ -183,6 +187,134 @@ static void ScheduleFeeds() {
 /** @brief CheckFeed
 */
 static void CheckFeed(feeddata *ptr) {
+  mrss_item_t *item;
+  mrss_hour_t *hour;
+  mrss_day_t *day;
+  mrss_category_t *category;
+  Channel *c;
+
+  irc_chanprivmsg(feed_bot, ptr->channel,"Generic:");
+  irc_chanprivmsg(feed_bot, ptr->channel,"file: %s", ptr->mrss->file);
+  irc_chanprivmsg(feed_bot, ptr->channel,"encoding: %s", ptr->mrss->encoding);
+  irc_chanprivmsg(feed_bot, ptr->channel,"size: %d", ptr->mrss->size);
+
+  irc_chanprivmsg(feed_bot, ptr->channel,"version:");
+  switch (ptr->mrss->version)
+    {
+    case MRSS_VERSION_0_91:
+      irc_chanprivmsg(feed_bot, ptr->channel," 0.91");
+      break;
+
+    case MRSS_VERSION_0_92:
+      irc_chanprivmsg(feed_bot, ptr->channel," 0.92");
+      break;
+
+    case MRSS_VERSION_1_0:
+      irc_chanprivmsg(feed_bot, ptr->channel," 1.0");
+      break;
+
+    case MRSS_VERSION_2_0:
+      irc_chanprivmsg(feed_bot, ptr->channel," 2.0");
+      break;
+    }
+
+  irc_chanprivmsg(feed_bot, ptr->channel,"Channel:");
+  irc_chanprivmsg(feed_bot, ptr->channel,"title: %s", ptr->mrss->title);
+  irc_chanprivmsg(feed_bot, ptr->channel,"description: %s", ptr->mrss->description);
+  irc_chanprivmsg(feed_bot, ptr->channel,"link: %s", ptr->mrss->link);
+  irc_chanprivmsg(feed_bot, ptr->channel,"language: %s", ptr->mrss->language);
+  irc_chanprivmsg(feed_bot, ptr->channel,"rating: %s", ptr->mrss->rating);
+  irc_chanprivmsg(feed_bot, ptr->channel,"copyright: %s", ptr->mrss->copyright);
+  irc_chanprivmsg(feed_bot, ptr->channel,"pubDate: %s", ptr->mrss->pubDate);
+  irc_chanprivmsg(feed_bot, ptr->channel,"lastBuildDate: %s", ptr->mrss->lastBuildDate);
+  irc_chanprivmsg(feed_bot, ptr->channel,"docs: %s", ptr->mrss->docs);
+  irc_chanprivmsg(feed_bot, ptr->channel,"managingeditor: %s", ptr->mrss->managingeditor);
+  irc_chanprivmsg(feed_bot, ptr->channel,"webMaster: %s", ptr->mrss->webMaster);
+  irc_chanprivmsg(feed_bot, ptr->channel,"generator: %s", ptr->mrss->generator);
+  irc_chanprivmsg(feed_bot, ptr->channel,"ttl: %d", ptr->mrss->ttl);
+  irc_chanprivmsg(feed_bot, ptr->channel,"about: %s", ptr->mrss->about);
+
+  irc_chanprivmsg(feed_bot, ptr->channel,"Image:");
+  irc_chanprivmsg(feed_bot, ptr->channel,"image_title: %s", ptr->mrss->image_title);
+  irc_chanprivmsg(feed_bot, ptr->channel,"image_url: %s", ptr->mrss->image_url);
+  irc_chanprivmsg(feed_bot, ptr->channel,"image_link: %s", ptr->mrss->image_link);
+  irc_chanprivmsg(feed_bot, ptr->channel,"image_width: %d", ptr->mrss->image_width);
+  irc_chanprivmsg(feed_bot, ptr->channel,"image_height: %d", ptr->mrss->image_height);
+  irc_chanprivmsg(feed_bot, ptr->channel,"image_description: %s", ptr->mrss->image_description);
+
+  irc_chanprivmsg(feed_bot, ptr->channel,"TextInput:");
+  irc_chanprivmsg(feed_bot, ptr->channel,"textinput_title: %s", ptr->mrss->textinput_title);
+  irc_chanprivmsg(feed_bot, ptr->channel,"textinput_description: %s",
+	   ptr->mrss->textinput_description);
+  irc_chanprivmsg(feed_bot, ptr->channel,"textinput_name: %s", ptr->mrss->textinput_name);
+  irc_chanprivmsg(feed_bot, ptr->channel,"textinput_link: %s", ptr->mrss->textinput_link);
+
+  irc_chanprivmsg(feed_bot, ptr->channel,"Cloud:");
+  irc_chanprivmsg(feed_bot, ptr->channel,"cloud: %s", ptr->mrss->cloud);
+  irc_chanprivmsg(feed_bot, ptr->channel,"cloud_domain: %s", ptr->mrss->cloud_domain);
+  irc_chanprivmsg(feed_bot, ptr->channel,"cloud_port: %d", ptr->mrss->cloud_port);
+  irc_chanprivmsg(feed_bot, ptr->channel,"cloud_registerProcedure: %s",
+	   ptr->mrss->cloud_registerProcedure);
+  irc_chanprivmsg(feed_bot, ptr->channel,"cloud_protocol: %s", ptr->mrss->cloud_protocol);
+
+  irc_chanprivmsg(feed_bot, ptr->channel,"SkipHours:");
+  hour = ptr->mrss->skipHours;
+  while (hour)
+    {
+      irc_chanprivmsg(feed_bot, ptr->channel,"%s", hour->hour);
+      hour = hour->next;
+    }
+
+  irc_chanprivmsg(feed_bot, ptr->channel,"SkipDays:");
+  day = ptr->mrss->skipDays;
+  while (day)
+    {
+      irc_chanprivmsg(feed_bot, ptr->channel,"%s", day->day);
+      day = day->next;
+    }
+
+  irc_chanprivmsg(feed_bot, ptr->channel,"Category:");
+  category = ptr->mrss->category;
+  while (category)
+    {
+      irc_chanprivmsg(feed_bot, ptr->channel,"category: %s", category->category);
+      irc_chanprivmsg(feed_bot, ptr->channel,"category_domain: %s", category->domain);
+      category = category->next;
+    }
+
+  irc_chanprivmsg(feed_bot, ptr->channel,"Items:");
+  item = ptr->mrss->item;
+  while (item)
+    {
+      irc_chanprivmsg(feed_bot, ptr->channel,"title: %s", item->title);
+      irc_chanprivmsg(feed_bot, ptr->channel,"link: %s", item->link);
+      irc_chanprivmsg(feed_bot, ptr->channel,"description: %s", item->description);
+      irc_chanprivmsg(feed_bot, ptr->channel,"author: %s", item->author);
+      irc_chanprivmsg(feed_bot, ptr->channel,"comments: %s", item->comments);
+      irc_chanprivmsg(feed_bot, ptr->channel,"pubDate: %s", item->pubDate);
+      irc_chanprivmsg(feed_bot, ptr->channel,"guid: %s", item->guid);
+      irc_chanprivmsg(feed_bot, ptr->channel,"guid_isPermaLink: %d", item->guid_isPermaLink);
+      irc_chanprivmsg(feed_bot, ptr->channel,"source: %s", item->source);
+      irc_chanprivmsg(feed_bot, ptr->channel,"source_url: %s", item->source_url);
+      irc_chanprivmsg(feed_bot, ptr->channel,"enclosure: %s", item->enclosure);
+      irc_chanprivmsg(feed_bot, ptr->channel,"enclosure_url: %s", item->enclosure_url);
+      irc_chanprivmsg(feed_bot, ptr->channel,"enclosure_length: %d", item->enclosure_length);
+      irc_chanprivmsg(feed_bot, ptr->channel,"enclosure_type: %s", item->enclosure_type);
+
+      irc_chanprivmsg(feed_bot, ptr->channel,"Category:");
+      category = item->category;
+      while (category)
+	{
+	  irc_chanprivmsg(feed_bot, ptr->channel,"category: %s", category->category);
+	  irc_chanprivmsg(feed_bot, ptr->channel,"category_domain: %s", category->domain);
+	  category = category->next;
+	}
+
+      irc_chanprivmsg(feed_bot, ptr->channel,"");
+      item = item->next;
+    }
+
+  mrss_free (ptr->mrss);
 
 }
 
