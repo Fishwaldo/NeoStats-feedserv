@@ -23,13 +23,18 @@
 
 #include "neostats.h"
 #include "feed.h"
+#include "mrss.h"
 
 static int feed_cmd_list( const CmdParams *cmdparams );
 static int feed_cmd_add( const CmdParams *cmdparams );
 static int feed_cmd_del( const CmdParams *cmdparams );
 static int feed_set_exclusions_cb( const CmdParams *cmdparams, SET_REASON reason );
-
+static void FeedDownLoadHandler(void *ptr, int status, char *data, int datasize);
 Bot *feed_bot;
+typedef struct feeddata {
+	mrss_t *mrss;
+} feeddata;
+
 
 /** Copyright info */
 static const char *feed_copyright[] = {
@@ -66,7 +71,7 @@ static bot_cmd feed_commands[]=
 
 static bot_setting feed_settings[]=
 {
-	{"VERBOSE",		&feed.verbose,		SET_TYPE_BOOLEAN,	0,	0,	NS_ULEVEL_ADMIN, 	NULL,	feed_help_set_verbose,	feed_set_cb, (void*)1 	},
+	{"VERBOSE",		&feed.verbose,		SET_TYPE_BOOLEAN,	0,	0,	NS_ULEVEL_ADMIN, 	NULL,	feed_help_set_verbose,	NULL, (void*)1 	},
 	{"EXCLUSIONS",	&feed.exclusions,	SET_TYPE_BOOLEAN,	0,	0,	NS_ULEVEL_ADMIN,	NULL,	feed_help_set_exclusions,	feed_set_exclusions_cb, (void *)0 },
 	NS_SETTING_END()
 };
@@ -160,6 +165,51 @@ static int feed_set_exclusions_cb( const CmdParams *cmdparams, SET_REASON reason
 	return NS_SUCCESS;
 }
 
+static void ScheduleFeeds() {
+	feeddata *ptr;
+	SET_SEGV_LOCATION();
+	ptr = ns_malloc(sizeof(feeddata));
+	ptr->mrss = NULL;
+	mrss_new(&ptr->mrss);
+	if (new_transfer("http://slashdot.org/index.rss", NULL, NS_MEMORY, "", ptr, FeedDownLoadHandler) != NS_SUCCESS ) {
+		nlog(LOG_WARNING, "Download Feed Failed");
+		irc_chanalert(feed_bot, "Download Feed Failed");
+		mrss_free(ptr->mrss);
+		ns_free(ptr);
+		return;
+	}
+}
+
+/** @brief CheckFeed
+*/
+static void CheckFeed(feeddata *ptr) {
+
+}
+
+/** @brief FeedDownLoadHandler
+*/
+static void FeedDownLoadHandler(void *usrptr, int status, char *data, int datasize) {
+	mrss_error_t ret;
+	feeddata *ptr = (feeddata *)usrptr;
+	SET_SEGV_LOCATION();
+	if (status != NS_SUCCESS) {
+		dlog(DEBUG1, "RSS Scrape Download failed: %s", data);
+		irc_chanalert(feed_bot, "RSS Scrape Failed: %s", data);
+		mrss_free((feeddata *)ptr->mrss);
+		ns_free(ptr);
+		return;
+	}
+	/* ok, here is our data */
+	ret = mrss_parse_buffer(data, datasize, &ptr->mrss);
+	if (ret != MRSS_OK) {
+		dlog(DEBUG1, "RSS Parse Failed: %s", mrss_strerror(ret));
+		mrss_free((feeddata *)ptr->mrss);
+		ns_free(ptr);
+		return;
+	}
+	CheckFeed((feeddata *)ptr);
+	return;	
+}
 
 /** @brief ModInit
  *
@@ -191,6 +241,7 @@ int ModSynch (void)
 {
 	SET_SEGV_LOCATION();
 	feed_bot = AddBot (&feed_botinfo);
+	ScheduleFeeds();
 	return NS_SUCCESS;
 }
 

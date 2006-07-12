@@ -18,12 +18,12 @@
 **  USA
 **
 ** NeoStats CVS Identification
-** $Id: opsb_help.c 210 2006-01-26 15:35:09Z Fish $
+** $Id: feed_help.c 210 2006-01-26 15:35:09Z Fish $
 */
 
 #include "neostats.h"
 
-const char *opsb_about[] = {
+const char *feed_about[] = {
 	"\2Open Proxy Scanning Bot Information\2",
 	"",
 	"This service scans clients connecting to this network for",
@@ -37,7 +37,7 @@ const char *opsb_about[] = {
 	NULL
 };
 
-const char *opsb_help_add[] = {
+const char *feed_help_add[] = {
 	"Add a port to scanning",
 	"Syntax: \2ADD <type> <port>\2",
 	"",
@@ -49,7 +49,7 @@ const char *opsb_help_add[] = {
 	NULL
 };
 
-const char *opsb_help_del[] = {
+const char *feed_help_del[] = {
 	"Delete a port from scanning",
 	"Syntax: \2DEL <index>\2",
 	"",
@@ -58,7 +58,7 @@ const char *opsb_help_del[] = {
 	NULL
 };
 
-const char *opsb_help_list[] = {
+const char *feed_help_list[] = {
 	"List protocols and ports scanned",
 	"Syntax: \2LIST\2",
 	"",
@@ -67,8 +67,14 @@ const char *opsb_help_list[] = {
 	NULL
 };
 
-const char *opsb_help_set_exclusions[] = {
+const char *feed_help_set_exclusions[] = {
 	"\2EXCLUSIONS <ON|OFF>\2",
 	"Use global exclusion list in addition to local exclusion list",
+	NULL
+};
+
+const char *feed_help_set_verbose [] = {
+	"\2VERBOSE <ON|OFF>\2",
+	"Whether OPSB is verbose in operation or not",
 	NULL
 };
