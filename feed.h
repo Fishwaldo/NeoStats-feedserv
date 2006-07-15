@@ -39,6 +39,7 @@ extern feedcfg feed;
 extern const char *feed_about[];
 extern const char *feed_help_add[];
 extern const char *feed_help_del[];
+extern const char *feed_help_info[];
 extern const char *feed_help_list[];
 
 extern const char *feed_help_set_exclusions[];

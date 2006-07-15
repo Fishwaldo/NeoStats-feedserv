@@ -48,6 +48,17 @@ const char *feed_help_add[] = {
 	"The new port is scanned straight away",
 	NULL
 };
+const char *feed_help_info[] = {
+	"Add a port to scanning",
+	"Syntax: \2ADD <type> <port>\2",
+	"",
+	"Add an entry to the port scan list.",
+	"<type> must be one of:", 
+	"    HTTP, HTTPPOST, SOCKS4, SOCKS5, WINGATE, ROUTER",
+	"<port> must be a valid port number.",
+	"The new port is scanned straight away",
+	NULL
+};
 
 const char *feed_help_del[] = {
 	"Delete a port from scanning",

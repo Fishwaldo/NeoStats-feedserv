@@ -11,5 +11,6 @@ feedserv_la_LDFLAGS	= -module -avoid-version
 
 EXTRA_DIST              	= autotools/ccdv.c autotools/shtool RELNOTES
 dist_doc_DATA		= README.feedserv README.feedserv.html
+dist_data_DATA          = feeds.dat
 
 include $(top_srcdir)/autotools/rules.mk

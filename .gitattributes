@@ -13,6 +13,7 @@
 /feed.c -text
 /feed.h -text
 /feed_help.c -text
+/feeds.dat -text
 /html.css -text
 /install-sh -text
 /modconfig.h.in -text

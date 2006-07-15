@@ -1,3 +1,4 @@
+
 /* NeoStats - IRC Statistical Services 
 ** Copyright (c) 1999-2006 Adam Rutter, Justin Hammond, Mark Hetherington
 ** http://www.neostats.net/
@@ -28,8 +29,11 @@
 static int feed_cmd_list( const CmdParams *cmdparams );
 static int feed_cmd_add( const CmdParams *cmdparams );
 static int feed_cmd_del( const CmdParams *cmdparams );
+static int feed_cmd_info( const CmdParams *cmdparams );
 static int feed_set_exclusions_cb( const CmdParams *cmdparams, SET_REASON reason );
 static void FeedDownLoadHandler(void *ptr, int status, char *data, int datasize);
+static void FeedRequestHandler(void *usrptr, int status, char *data, int datasize);
+
 char *trim (char *tmp);
 
 Bot *feed_bot;
@@ -39,6 +43,42 @@ typedef struct feeddata {
 } feeddata;
 
 feedcfg feed;
+
+typedef struct feedinfo {
+	char *title;
+	char *description;
+	char *link;
+	char *about;
+	char feedurl[BUFSIZE];
+	int setup;
+} feedinfo;
+
+typedef struct feedcache {
+	char *item;
+	char *link;
+	char *description;
+	char *author;
+	char *comments;
+	char *guid;
+	char *date;
+	char *hash;
+} feedcache;
+
+typedef struct subscribed {
+	hash_t *users;
+	hash_t *chans;
+	feedinfo *feed;
+	list_t *cache;
+} subscribed;
+
+typedef struct feedrequest {
+	Client *c;
+	feedinfo *fi;
+} feedrequest;
+
+list_t *lofeeds;
+list_t *subscribedfeeds;
+
 
 /** Copyright info */
 static const char *feed_copyright[] = {
@@ -67,9 +107,10 @@ ModuleInfo module_info = {
 
 static bot_cmd feed_commands[]=
 {
-	{"ADD",		feed_cmd_add,		2,	NS_ULEVEL_ADMIN,	feed_help_add, 0, NULL, NULL},
+	{"ADD",		feed_cmd_add,		1,	NS_ULEVEL_ADMIN,	feed_help_add, 0, NULL, NULL},
 	{"DEL",		feed_cmd_del,		1,	NS_ULEVEL_ADMIN,	feed_help_del, 0, NULL, NULL},
 	{"LIST",	feed_cmd_list,		0,	NS_ULEVEL_ADMIN,	feed_help_list, 0, NULL, NULL},
+	{"INFO", 	feed_cmd_info,		1,	NS_ULEVEL_ADMIN,	feed_help_info, 0, NULL, NULL},
 	NS_CMD_END()
 };
 
@@ -215,8 +256,26 @@ trim (char *tmp)
 
 int feed_cmd_list (const CmdParams *cmdparams) 
 {
-
+	feedinfo *fi;
+	lnode_t *node;
+	int i = 1;
+	int doing = 0;
 	SET_SEGV_LOCATION();
+	node = list_first(lofeeds);
+	irc_prefmsg(feed_bot, cmdparams->source, "Available Feed Listing:");
+	while (node) {
+		fi = lnode_get(node);
+		if (fi->setup == 1) {
+			irc_prefmsg(feed_bot, cmdparams->source, "%d) Title: %s", i, fi->title);
+		} else {
+			doing++;	
+		}
+		i++;
+		node = list_next(lofeeds, node);
+	}
+	irc_prefmsg(feed_bot, cmdparams->source, "End of List.");
+	if (doing > 0)  irc_prefmsg(feed_bot, cmdparams->source, "Still Setting up %d feeds", doing);
+	CommandReport(feed_bot, "%s requested a feed listing", cmdparams->source->name);
 	return NS_SUCCESS;
 }
 
@@ -231,8 +290,65 @@ int feed_cmd_list (const CmdParams *cmdparams)
 
 int feed_cmd_add (const CmdParams *cmdparams) 
 {
-
+	feedinfo *fi;
+	feedrequest *fr;
+	lnode_t *node;
 	SET_SEGV_LOCATION();
+	node = list_first(lofeeds);
+	while (node) {
+		fi = lnode_get(node);
+		if (!strcasecmp(fi->feedurl, cmdparams->av[0])) {
+			/* it exists, don't add */
+			irc_prefmsg(feed_bot, cmdparams->source, "A feed with that URL already exists: %s", fi->title);
+			return NS_SUCCESS;
+		}
+		node = list_next(lofeeds, node);
+	}	
+	/* if we are here, add it */
+	fr = ns_malloc(sizeof(feedrequest));
+	fr->c = cmdparams->source;
+	fr->fi = ns_malloc(sizeof(feedinfo));
+	strncpy(fr->fi->feedurl, cmdparams->av[0], BUFSIZE);
+	if (new_transfer(fr->fi->feedurl, NULL, NS_MEMORY, "", fr, FeedRequestHandler) != NS_SUCCESS ) {
+		irc_prefmsg(feed_bot, cmdparams->source, "Feed Setup Failed");
+		ns_free(fr->fi);
+		ns_free(fr);
+		return NS_SUCCESS;
+	}
+	irc_prefmsg(feed_bot, cmdparams->source, "Checking Feed is valid. Please wait...");
+	return NS_SUCCESS;
+}
+
+
+/** @brief feed_cmd_info
+ *
+ *  ADD command handler
+ *
+ *  @param cmdparam struct
+ *
+ *  @return NS_SUCCESS if suceeds else result of command
+ */
+
+int feed_cmd_info (const CmdParams *cmdparams) 
+{
+	feedinfo *fi;
+	lnode_t *node;
+	int i = 1;
+	SET_SEGV_LOCATION();
+	node = list_first(lofeeds);
+	while (node) {
+		if (i == atoi(cmdparams->av[0])) {
+			fi = lnode_get(node);
+			irc_prefmsg(feed_bot, cmdparams->source, "Feed Title: %s", fi->title);
+			irc_prefmsg(feed_bot, cmdparams->source, "Feed URL: %s", fi->link);
+			irc_prefmsg(feed_bot, cmdparams->source, "Feed Description: %s", fi->description);
+			irc_prefmsg(feed_bot, cmdparams->source, "Feed RSS Link: %s", fi->feedurl);
+			irc_prefmsg(feed_bot, cmdparams->source, "Feed About: %s",fi->about);
+			return NS_SUCCESS;
+		}
+		i++;
+		node = list_next(lofeeds, node);
+	}	
 	return NS_SUCCESS;
 }
 
@@ -276,6 +392,7 @@ static int feed_set_exclusions_cb( const CmdParams *cmdparams, SET_REASON reason
 static void ScheduleFeeds() {
 	feeddata *ptr;
 	SET_SEGV_LOCATION();
+	return;
 	ptr = ns_malloc(sizeof(feeddata));
 	ptr->mrss = NULL;
 	mrss_new(&ptr->mrss);
@@ -297,12 +414,11 @@ static void CheckFeed(feeddata *ptr) {
   mrss_hour_t *hour;
   mrss_day_t *day;
   mrss_category_t *category;
-  Channel *c;
 
   irc_chanprivmsg(feed_bot, ptr->channel,"Generic:");
   irc_chanprivmsg(feed_bot, ptr->channel,"file: %s", ptr->mrss->file);
   irc_chanprivmsg(feed_bot, ptr->channel,"encoding: %s", ptr->mrss->encoding);
-  irc_chanprivmsg(feed_bot, ptr->channel,"size: %d", ptr->mrss->size);
+  irc_chanprivmsg(feed_bot, ptr->channel,"size: %d", (int)ptr->mrss->size);
 
   irc_chanprivmsg(feed_bot, ptr->channel,"version:");
   switch (ptr->mrss->version)
@@ -416,7 +532,6 @@ static void CheckFeed(feeddata *ptr) {
 	  category = category->next;
 	}
 
-      irc_chanprivmsg(feed_bot, ptr->channel,"");
       item = item->next;
     }
 
@@ -449,6 +564,123 @@ static void FeedDownLoadHandler(void *usrptr, int status, char *data, int datasi
 	return;	
 }
 
+static int load_feeds( void *data, int size )
+{
+	feedinfo *fi;	
+	if( size == sizeof(feedinfo) )
+	{
+		fi = ns_calloc( sizeof(feedinfo));
+		os_memcpy(fi, data, sizeof (feedinfo));
+		lnode_create_append(lofeeds, fi);
+	}
+	return NS_FALSE;
+}
+
+/** @brief FeedSetupHandler
+*/
+static void FeedSetupHandler(void *usrptr, int status, char *data, int datasize) {
+	
+	feedinfo *ptr = lnode_get((lnode_t *)usrptr);
+	feedinfo *next = NULL;
+	mrss_t *mrss;
+	mrss_error_t ret;
+	lnode_t *node;
+	SET_SEGV_LOCATION();
+
+
+	if (status != NS_SUCCESS) {
+		dlog(DEBUG1, "RSS Scrape Download failed: %s", data);
+		/* ok, move onto the next url */
+		node = list_next(lofeeds, (lnode_t *)usrptr);
+		if (node) next = lnode_get(node);
+		if ((next) && ((new_transfer(next->feedurl, NULL, NS_MEMORY, "", node, FeedSetupHandler) != NS_SUCCESS ))) {
+			nlog(LOG_WARNING, "Download Feed Setup failed");
+		}
+		return;
+	}
+	mrss = NULL;
+	mrss_new(&mrss);
+	/* ok, here is our data */
+	ret = mrss_parse_buffer(data, datasize, &mrss);
+	if (ret != MRSS_OK) {
+		dlog(DEBUG1, "RSS Parse Failed: %s", mrss_strerror(ret));
+		mrss_free(mrss);
+		/* ok, move onto the next url */
+		node = list_next(lofeeds, (lnode_t *)usrptr);
+		if (node) next = lnode_get(node);
+		if ((next) && ((new_transfer(next->feedurl, NULL, NS_MEMORY, "", node, FeedSetupHandler) != NS_SUCCESS ))) {
+			nlog(LOG_WARNING, "Download Feed Setup failed");
+		}
+		return;
+	}
+	ptr->title = strndup(mrss->title, strlen(mrss->title));
+	if (mrss->description)
+		ptr->description = strndup(mrss->description, strlen(mrss->description));
+	if (mrss->link)
+		ptr->link = strndup( mrss->link, strlen(mrss->link));
+	if (mrss->about) {
+		ptr->about = strndup(mrss->about, strlen(mrss->about));
+	} else {
+		ptr->about = NULL;
+	}
+	ptr->setup = 1;
+	mrss_free(mrss);
+
+
+	/* ok, move onto the next url */
+	node = list_next(lofeeds, (lnode_t *)usrptr);
+	if (node) next = lnode_get(node);
+	if ((next) && ((new_transfer(next->feedurl, NULL, NS_MEMORY, "", node, FeedSetupHandler) != NS_SUCCESS ))) {
+			nlog(LOG_WARNING, "Download Feed Setup failed");
+	}
+	return;	
+}
+
+/** @brief FeedRequestHandler
+*/
+static void FeedRequestHandler(void *usrptr, int status, char *data, int datasize) {
+	
+	feedrequest *ptr = (feedrequest *)usrptr;
+	mrss_t *mrss;
+	mrss_error_t ret;
+	SET_SEGV_LOCATION();
+
+
+	if (status != NS_SUCCESS) {
+		dlog(DEBUG1, "RSS Scrape Download failed: %s", data);
+		irc_prefmsg(feed_bot, ptr->c, "RSS Scrape Failed. %s not added", ptr->fi->feedurl);
+		ns_free(ptr->fi);
+		ns_free(ptr);
+		return;
+	}
+	mrss = NULL;
+	mrss_new(&mrss);
+	/* ok, here is our data */
+	ret = mrss_parse_buffer(data, datasize, &mrss);
+	if (ret != MRSS_OK) {
+		dlog(DEBUG1, "RSS Parse Failed: %s", mrss_strerror(ret));
+		irc_prefmsg(feed_bot, ptr->c, "RSS Parse Failed for URL %s: %s", ptr->fi->feedurl, mrss_strerror(ret));
+		mrss_free(mrss);
+		ns_free(ptr->fi);
+		ns_free(ptr);
+		return;
+	}
+	ptr->fi->title = strndup(mrss->title, strlen(mrss->title));
+	ptr->fi->description = strndup(mrss->description, strlen(mrss->description));
+	ptr->fi->link = strndup(mrss->link, strlen(mrss->link));
+	if (mrss->about) {
+		ptr->fi->about = strndup(mrss->about, strlen(mrss->about));
+	} else {
+		ptr->fi->about = NULL;
+	}
+	ptr->fi->setup = 1;
+	mrss_free(mrss);
+	lnode_create_append(lofeeds, ptr->fi);
+	irc_prefmsg(feed_bot, ptr->c, "%s has been added to Feed List", ptr->fi->title);
+	return;	
+}
+
+
 /** @brief ModInit
  *
  *  Init handler
@@ -460,9 +692,35 @@ static void FeedDownLoadHandler(void *usrptr, int status, char *data, int datasi
 
 int ModInit( void )
 {
-
+	FILE *feeds;
+	static char buf[BUFSIZE];
+	feedinfo *fi, *ff = NULL;
+	lnode_t *node;
 	SET_SEGV_LOCATION();
-
+	lofeeds = list_create( LISTCOUNT_T_MAX );
+	subscribedfeeds = list_create (LISTCOUNT_T_MAX );
+	DBAFetchRows("feeds", load_feeds);
+	/* if lofeeds count is 0, this is probably a first time load, so load from text file */
+	if (list_count(lofeeds) <= 0)  {
+		feeds = os_fopen("data/feeds.dat", "r");
+		if (!feeds) {
+			nlog(LOG_WARNING, "Can't Open Feed Listing file feeds.dat. FeedServ will start with no list of feeds");
+		} else {
+			while (os_fgets(buf, BUFSIZE, feeds)) {
+				fi = os_malloc(sizeof(feedinfo));
+				strncpy(fi->feedurl, buf, BUFSIZE);
+				fi->setup = 0;
+				lnode_create_append(lofeeds, fi);	
+			}
+			os_fclose(feeds);
+			node = list_first(lofeeds);
+			if (node) ff = lnode_get(node);
+			if ((ff) && ((new_transfer(ff->feedurl, NULL, NS_MEMORY, "", node, FeedSetupHandler) != NS_SUCCESS ))) {
+					nlog(LOG_WARNING, "Download Feed Setup failed");
+			}
+		}
+	}
+						
 	return NS_SUCCESS;
 }
 
