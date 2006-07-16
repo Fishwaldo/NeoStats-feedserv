@@ -37,6 +37,20 @@ const char *feed_about[] = {
 	NULL
 };
 
+const char *feed_help_subscribe[] = {
+	"\2Open Proxy Scanning Bot Information\2",
+	"",
+	"This service scans clients connecting to this network for",
+	"insecure proxies. Insecure proxies are often used to attack",
+	"networks or channels with clone bots. If you have a firewall,",
+	"or IDS software, please ignore any errors that this scan",
+	"may generate.",
+	"",
+	"If you have any further questions, please contact network",
+	"administration.",
+	NULL
+};
+
 const char *feed_help_add[] = {
 	"Add a port to scanning",
 	"Syntax: \2ADD <type> <port>\2",

@@ -31,6 +31,7 @@ extern Bot *feed_bot;
 typedef struct feedcfg {
   int verbose;
   int  exclusions;
+  int interval;
 } feedcfg;
 
 extern feedcfg feed;
@@ -41,7 +42,7 @@ extern const char *feed_help_add[];
 extern const char *feed_help_del[];
 extern const char *feed_help_info[];
 extern const char *feed_help_list[];
-
+extern const char *feed_help_subscribe[];
 extern const char *feed_help_set_exclusions[];
 extern const char *feed_help_set_verbose[];
 #endif /* FEED_H */

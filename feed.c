@@ -31,6 +31,7 @@ static int feed_cmd_add( const CmdParams *cmdparams );
 static int feed_cmd_del( const CmdParams *cmdparams );
 static int feed_cmd_info( const CmdParams *cmdparams );
 static int feed_set_exclusions_cb( const CmdParams *cmdparams, SET_REASON reason );
+static int feed_cmd_subscribe(const CmdParams *cmdparams);
 static void FeedDownLoadHandler(void *ptr, int status, char *data, int datasize);
 static void FeedRequestHandler(void *usrptr, int status, char *data, int datasize);
 
@@ -45,10 +46,10 @@ typedef struct feeddata {
 feedcfg feed;
 
 typedef struct feedinfo {
-	char *title;
-	char *description;
-	char *link;
-	char *about;
+	char title[BUFSIZE];
+	char description[BUFSIZE];
+	char link[BUFSIZE];
+	char about[BUFSIZE];
 	char feedurl[BUFSIZE];
 	int setup;
 } feedinfo;
@@ -69,6 +70,8 @@ typedef struct subscribed {
 	hash_t *chans;
 	feedinfo *feed;
 	list_t *cache;
+	int active;
+	int lastcheck;
 } subscribed;
 
 typedef struct feedrequest {
@@ -77,7 +80,9 @@ typedef struct feedrequest {
 } feedrequest;
 
 list_t *lofeeds;
-list_t *subscribedfeeds;
+hash_t *subscribedfeeds;
+
+static int fs_subscribe(Client *c, feedinfo *fi);
 
 
 /** Copyright info */
@@ -111,6 +116,7 @@ static bot_cmd feed_commands[]=
 	{"DEL",		feed_cmd_del,		1,	NS_ULEVEL_ADMIN,	feed_help_del, 0, NULL, NULL},
 	{"LIST",	feed_cmd_list,		0,	NS_ULEVEL_ADMIN,	feed_help_list, 0, NULL, NULL},
 	{"INFO", 	feed_cmd_info,		1,	NS_ULEVEL_ADMIN,	feed_help_info, 0, NULL, NULL},
+	{"SUBSCRIBE", 	feed_cmd_subscribe,	1,	NS_ULEVEL_ADMIN,	feed_help_subscribe, 0, NULL, NULL},
 	NS_CMD_END()
 };
 
@@ -268,6 +274,9 @@ int feed_cmd_list (const CmdParams *cmdparams)
 		if (fi->setup == 1) {
 			irc_prefmsg(feed_bot, cmdparams->source, "%d) Title: %s", i, fi->title);
 		} else {
+			if ((cmdparams->ac > 0) && (!strcasecmp(cmdparams->av[0], "all"))) {
+				irc_prefmsg(feed_bot, cmdparams->source, "%d) FeedURL: %s (Invalid)", i, fi->feedurl);
+			}
 			doing++;	
 		}
 		i++;
@@ -363,7 +372,109 @@ int feed_cmd_info (const CmdParams *cmdparams)
 
 int feed_cmd_del (const CmdParams *cmdparams) 
 {
+	feedinfo *fi;
+	lnode_t *node;
+	int i = 1;
 	SET_SEGV_LOCATION();
+	node = list_first(lofeeds);
+	while (node) {
+		if (i == atoi(cmdparams->av[0])) {
+			fi = lnode_get(node);
+			irc_prefmsg(feed_bot, cmdparams->source, "Feed %s has been deleted", fi->title);
+			DBADelete("feeds", fi->feedurl);
+			ns_free(fi);
+			list_delete(lofeeds, node);
+			return NS_SUCCESS;
+		}
+		i++;
+		node = list_next(lofeeds, node);
+	}	
+	return NS_SUCCESS;
+}
+
+/** @brief feed_cmd_subscribe
+ *
+ *  subscribe to a feed, either by number, or by a pattern
+ */
+static int feed_cmd_subscribe(const CmdParams *cmdparams)
+{
+	feedinfo *fi;
+	lnode_t *node;
+	int i = 1;
+	int get = 0;
+	SET_SEGV_LOCATION();
+
+	get = atoi(cmdparams->av[0]);
+	
+	node = list_first(lofeeds);
+	while (node) {
+		fi = lnode_get(node);
+		if ((get > 0) && (i == get)) {
+			irc_prefmsg(feed_bot, cmdparams->source, "Subscribing to %s", fi->title);
+			fs_subscribe(cmdparams->source, fi);
+		} else if (match(cmdparams->av[0], fi->title)) {
+			irc_prefmsg(feed_bot, cmdparams->source, "Subscribing to %s (Matched on Title)", fi->title);
+			fs_subscribe(cmdparams->source, fi);
+		} else if (match(cmdparams->av[0], fi->description)) {
+			irc_prefmsg(feed_bot, cmdparams->source, "Subscribing to %s (Matched on Description)", fi->title);
+			fs_subscribe(cmdparams->source, fi);
+		}
+		node = list_next(lofeeds, node);
+		i++;
+	}
+	return NS_SUCCESS;
+}
+
+static int fs_check_subscriptions( void *unused) {
+	hnode_t *hnode;
+	hscan_t hscan;
+	subscribed *sub;
+	hash_scan_begin(&hscan, subscribedfeeds);
+	while ((hnode = hash_scan_next(&hscan)) != NULL) {
+		sub = hnode_get(hnode);
+		if (sub->active != 1) 
+			continue;
+		if ((sub->lastcheck + feed.interval) > (int) me.now) 
+			continue;
+		/* if we are here, its active, and its ready for a scan */
+		if (new_transfer(sub->feed->feedurl, NULL, NS_MEMORY, "", sub, FeedDownLoadHandler) != NS_SUCCESS ) {
+			nlog(LOG_WARNING, "Download Feed Failed");
+			irc_chanalert(feed_bot, "Download Feed Failed");
+			continue;
+		}
+		sub->lastcheck = me.now;
+	}
+	return NS_SUCCESS;
+}
+
+static int fs_subscribe(Client *C, feedinfo *fi) {
+	SET_SEGV_LOCATION();
+	hnode_t *hnode;
+	subscribed *sub;
+	hnode = hnode_find(subscribedfeeds, fi->feedurl);
+	if (!hnode) {
+		/* its a new subscription for feeds */
+		sub = ns_malloc(sizeof(subscribed));
+		sub->users = hash_create(HASHCOUNT_T_MAX, NULL, NULL);
+		sub->chans = hash_create(HASHCOUNT_T_MAX, NULL, NULL);
+		sub->cache = list_create(LISTCOUNT_T_MAX);
+		sub->feed = fi;
+		hnode_create_insert(subscribedfeeds, sub, sub->feed->feedurl);
+	} else {
+		sub = hnode_get(hnode);
+	}
+	if (sub->active != 1) {
+		sub->lastcheck = me.now;
+		sub->active = 1;
+	}
+	/* subscribe this user */
+	hnode_create_insert(sub->users, C->name, C->name);
+	DBAStore("feedsusers", sub->feed->feedurl, (void *)C->name, sizeof(C->name));
+	if (!FindTimer("CheckSubscriptions")) {
+		/* timer is not active */
+		/* XXX update interval for production... 10 is for debug */
+		AddTimer(TIMER_TYPE_INTERVAL, fs_check_subscriptions, "CheckSubscriptions", 10, NULL);
+	}
 	return NS_SUCCESS;
 }
 
@@ -389,187 +500,84 @@ static int feed_set_exclusions_cb( const CmdParams *cmdparams, SET_REASON reason
 	return NS_SUCCESS;
 }
 
-static void ScheduleFeeds() {
-	feeddata *ptr;
-	SET_SEGV_LOCATION();
-	return;
-	ptr = ns_malloc(sizeof(feeddata));
-	ptr->mrss = NULL;
-	mrss_new(&ptr->mrss);
-	ptr->channel = ns_malloc(MAXCHANLEN);
-	strncpy(ptr->channel, "#neostats", MAXCHANLEN);
-	if (new_transfer("http://slashdot.org/index.rss", NULL, NS_MEMORY, "", ptr, FeedDownLoadHandler) != NS_SUCCESS ) {
-		nlog(LOG_WARNING, "Download Feed Failed");
-		irc_chanalert(feed_bot, "Download Feed Failed");
-		mrss_free(ptr->mrss);
-		ns_free(ptr);
-		return;
-	}
+/** @brief SendToSubscribers
+ */
+static void SendToSubscribers(subscribed *subs, char *fmt, ...) {
+	char buf[BUFSIZE];
+	va_list va;
+	char *target;
+	hnode_t *hnode;
+	hscan_t hscan;
+	va_start(va, fmt);
+	ircvsnprintf(buf, BUFSIZE, fmt, va);
+	va_end(va);
+	hash_scan_begin(&hscan, subs->users);
+	while ((hnode = hash_scan_next(&hscan)) != NULL) {
+		target = hnode_get(hnode);
+		irc_prefmsg(feed_bot, FindClient(target), "%s", buf);
+	}			
+	hash_scan_begin(&hscan, subs->chans);
+	while ((hnode = hash_scan_next(&hscan)) != NULL) {
+		target = hnode_get(hnode);
+		irc_chanprivmsg(feed_bot, target, "%s", buf);
+	}			
 }
 
 /** @brief CheckFeed
 */
-static void CheckFeed(feeddata *ptr) {
+static void CheckFeed(subscribed *subs, mrss_t *mrss) {
   mrss_item_t *item;
   mrss_hour_t *hour;
   mrss_day_t *day;
   mrss_category_t *category;
 
-  irc_chanprivmsg(feed_bot, ptr->channel,"Generic:");
-  irc_chanprivmsg(feed_bot, ptr->channel,"file: %s", ptr->mrss->file);
-  irc_chanprivmsg(feed_bot, ptr->channel,"encoding: %s", ptr->mrss->encoding);
-  irc_chanprivmsg(feed_bot, ptr->channel,"size: %d", (int)ptr->mrss->size);
-
-  irc_chanprivmsg(feed_bot, ptr->channel,"version:");
-  switch (ptr->mrss->version)
-    {
-    case MRSS_VERSION_0_91:
-      irc_chanprivmsg(feed_bot, ptr->channel," 0.91");
-      break;
-
-    case MRSS_VERSION_0_92:
-      irc_chanprivmsg(feed_bot, ptr->channel," 0.92");
-      break;
-
-    case MRSS_VERSION_1_0:
-      irc_chanprivmsg(feed_bot, ptr->channel," 1.0");
-      break;
-
-    case MRSS_VERSION_2_0:
-      irc_chanprivmsg(feed_bot, ptr->channel," 2.0");
-      break;
-    }
-
-  irc_chanprivmsg(feed_bot, ptr->channel,"Channel:");
-  irc_chanprivmsg(feed_bot, ptr->channel,"title: %s", ptr->mrss->title);
-  irc_chanprivmsg(feed_bot, ptr->channel,"description: %s", ptr->mrss->description);
-  irc_chanprivmsg(feed_bot, ptr->channel,"link: %s", ptr->mrss->link);
-  irc_chanprivmsg(feed_bot, ptr->channel,"language: %s", ptr->mrss->language);
-  irc_chanprivmsg(feed_bot, ptr->channel,"rating: %s", ptr->mrss->rating);
-  irc_chanprivmsg(feed_bot, ptr->channel,"copyright: %s", ptr->mrss->copyright);
-  irc_chanprivmsg(feed_bot, ptr->channel,"pubDate: %s", ptr->mrss->pubDate);
-  irc_chanprivmsg(feed_bot, ptr->channel,"lastBuildDate: %s", ptr->mrss->lastBuildDate);
-  irc_chanprivmsg(feed_bot, ptr->channel,"docs: %s", ptr->mrss->docs);
-  irc_chanprivmsg(feed_bot, ptr->channel,"managingeditor: %s", ptr->mrss->managingeditor);
-  irc_chanprivmsg(feed_bot, ptr->channel,"webMaster: %s", ptr->mrss->webMaster);
-  irc_chanprivmsg(feed_bot, ptr->channel,"generator: %s", ptr->mrss->generator);
-  irc_chanprivmsg(feed_bot, ptr->channel,"ttl: %d", ptr->mrss->ttl);
-  irc_chanprivmsg(feed_bot, ptr->channel,"about: %s", ptr->mrss->about);
-
-  irc_chanprivmsg(feed_bot, ptr->channel,"Image:");
-  irc_chanprivmsg(feed_bot, ptr->channel,"image_title: %s", ptr->mrss->image_title);
-  irc_chanprivmsg(feed_bot, ptr->channel,"image_url: %s", ptr->mrss->image_url);
-  irc_chanprivmsg(feed_bot, ptr->channel,"image_link: %s", ptr->mrss->image_link);
-  irc_chanprivmsg(feed_bot, ptr->channel,"image_width: %d", ptr->mrss->image_width);
-  irc_chanprivmsg(feed_bot, ptr->channel,"image_height: %d", ptr->mrss->image_height);
-  irc_chanprivmsg(feed_bot, ptr->channel,"image_description: %s", ptr->mrss->image_description);
-
-  irc_chanprivmsg(feed_bot, ptr->channel,"TextInput:");
-  irc_chanprivmsg(feed_bot, ptr->channel,"textinput_title: %s", ptr->mrss->textinput_title);
-  irc_chanprivmsg(feed_bot, ptr->channel,"textinput_description: %s",
-	   ptr->mrss->textinput_description);
-  irc_chanprivmsg(feed_bot, ptr->channel,"textinput_name: %s", ptr->mrss->textinput_name);
-  irc_chanprivmsg(feed_bot, ptr->channel,"textinput_link: %s", ptr->mrss->textinput_link);
-
-  irc_chanprivmsg(feed_bot, ptr->channel,"Cloud:");
-  irc_chanprivmsg(feed_bot, ptr->channel,"cloud: %s", ptr->mrss->cloud);
-  irc_chanprivmsg(feed_bot, ptr->channel,"cloud_domain: %s", ptr->mrss->cloud_domain);
-  irc_chanprivmsg(feed_bot, ptr->channel,"cloud_port: %d", ptr->mrss->cloud_port);
-  irc_chanprivmsg(feed_bot, ptr->channel,"cloud_registerProcedure: %s",
-	   ptr->mrss->cloud_registerProcedure);
-  irc_chanprivmsg(feed_bot, ptr->channel,"cloud_protocol: %s", ptr->mrss->cloud_protocol);
-
-  irc_chanprivmsg(feed_bot, ptr->channel,"SkipHours:");
-  hour = ptr->mrss->skipHours;
-  while (hour)
-    {
-      irc_chanprivmsg(feed_bot, ptr->channel,"%s", hour->hour);
-      hour = hour->next;
-    }
-
-  irc_chanprivmsg(feed_bot, ptr->channel,"SkipDays:");
-  day = ptr->mrss->skipDays;
-  while (day)
-    {
-      irc_chanprivmsg(feed_bot, ptr->channel,"%s", day->day);
-      day = day->next;
-    }
-
-  irc_chanprivmsg(feed_bot, ptr->channel,"Category:");
-  category = ptr->mrss->category;
-  while (category)
-    {
-      irc_chanprivmsg(feed_bot, ptr->channel,"category: %s", category->category);
-      irc_chanprivmsg(feed_bot, ptr->channel,"category_domain: %s", category->domain);
-      category = category->next;
-    }
-
-  irc_chanprivmsg(feed_bot, ptr->channel,"Items:");
-  item = ptr->mrss->item;
+  SendToSubscribers(subs, "New %s Stories:", subs->feed->title);
+  item = mrss->item;
   while (item)
     {
-      irc_chanprivmsg(feed_bot, ptr->channel,"title: %s", item->title);
-      irc_chanprivmsg(feed_bot, ptr->channel,"link: %s", item->link);
-      irc_chanprivmsg(feed_bot, ptr->channel,"description: %s", html_trim(item->description));
-      irc_chanprivmsg(feed_bot, ptr->channel,"author: %s", item->author);
-      irc_chanprivmsg(feed_bot, ptr->channel,"comments: %s", item->comments);
-      irc_chanprivmsg(feed_bot, ptr->channel,"pubDate: %s", item->pubDate);
-      irc_chanprivmsg(feed_bot, ptr->channel,"guid: %s", item->guid);
-      irc_chanprivmsg(feed_bot, ptr->channel,"guid_isPermaLink: %d", item->guid_isPermaLink);
-      irc_chanprivmsg(feed_bot, ptr->channel,"source: %s", item->source);
-      irc_chanprivmsg(feed_bot, ptr->channel,"source_url: %s", item->source_url);
-      irc_chanprivmsg(feed_bot, ptr->channel,"enclosure: %s", item->enclosure);
-      irc_chanprivmsg(feed_bot, ptr->channel,"enclosure_url: %s", item->enclosure_url);
-      irc_chanprivmsg(feed_bot, ptr->channel,"enclosure_length: %d", item->enclosure_length);
-      irc_chanprivmsg(feed_bot, ptr->channel,"enclosure_type: %s", item->enclosure_type);
-
-      irc_chanprivmsg(feed_bot, ptr->channel,"Category:");
-      category = item->category;
-      while (category)
-	{
-	  irc_chanprivmsg(feed_bot, ptr->channel,"category: %s", category->category);
-	  irc_chanprivmsg(feed_bot, ptr->channel,"category_domain: %s", category->domain);
-	  category = category->next;
-	}
-
-      item = item->next;
+      SendToSubscribers(subs ,"Title: %s", item->title);
+      SendToSubscribers(subs ,"Text: %s", html_trim(item->description));
+      SendToSubscribers(subs ,"Date: %s", item->pubDate);
+      SendToSubscribers(subs ,"Link: %s", item->link);
+      SendToSubscribers(subs ,"==============================================================");
+    item = item->next;
     }
-
-  mrss_free (ptr->mrss);
-
+    
+  SendToSubscribers(subs, "End of Stories from %s", subs->feed->title);
 }
 
 /** @brief FeedDownLoadHandler
 */
 static void FeedDownLoadHandler(void *usrptr, int status, char *data, int datasize) {
 	mrss_error_t ret;
-	feeddata *ptr = (feeddata *)usrptr;
+	mrss_t *mrss;
+	subscribed *ptr = (subscribed *)usrptr;
 	SET_SEGV_LOCATION();
 	if (status != NS_SUCCESS) {
 		dlog(DEBUG1, "RSS Scrape Download failed: %s", data);
 		irc_chanalert(feed_bot, "RSS Scrape Failed: %s", data);
-		mrss_free((feeddata *)ptr->mrss);
-		ns_free(ptr);
 		return;
 	}
 	/* ok, here is our data */
-	ret = mrss_parse_buffer(data, datasize, &ptr->mrss);
+	mrss = NULL;
+	mrss_new(&mrss);
+	ret = mrss_parse_buffer(data, datasize, &mrss);
 	if (ret != MRSS_OK) {
 		dlog(DEBUG1, "RSS Parse Failed: %s", mrss_strerror(ret));
-		mrss_free((feeddata *)ptr->mrss);
-		ns_free(ptr);
+		mrss_free(mrss);
 		return;
 	}
-	CheckFeed((feeddata *)ptr);
+	CheckFeed(ptr, mrss);
+	mrss_free(mrss);
 	return;	
 }
 
-static int load_feeds( void *data, int size )
+static int load_feeds(char *key,  void *data, int size )
 {
 	feedinfo *fi;	
 	if( size == sizeof(feedinfo) )
 	{
-		fi = ns_calloc( sizeof(feedinfo));
+		fi = ns_malloc( sizeof(feedinfo));
 		os_memcpy(fi, data, sizeof (feedinfo));
 		lnode_create_append(lofeeds, fi);
 	}
@@ -613,17 +621,16 @@ static void FeedSetupHandler(void *usrptr, int status, char *data, int datasize)
 		}
 		return;
 	}
-	ptr->title = strndup(mrss->title, strlen(mrss->title));
+	strncpy(ptr->title, mrss->title, BUFSIZE);
 	if (mrss->description)
-		ptr->description = strndup(mrss->description, strlen(mrss->description));
+		strncpy(ptr->description, mrss->description, BUFSIZE);
 	if (mrss->link)
-		ptr->link = strndup( mrss->link, strlen(mrss->link));
-	if (mrss->about) {
-		ptr->about = strndup(mrss->about, strlen(mrss->about));
-	} else {
-		ptr->about = NULL;
-	}
+		strncpy(ptr->link, mrss->link, BUFSIZE);
+	if (mrss->about) 
+		strncpy(ptr->about, mrss->about, BUFSIZE);
 	ptr->setup = 1;
+	DBAStore("feeds", ptr->feedurl, (void *)ptr, sizeof(feedinfo));
+
 	mrss_free(mrss);
 
 
@@ -665,17 +672,18 @@ static void FeedRequestHandler(void *usrptr, int status, char *data, int datasiz
 		ns_free(ptr);
 		return;
 	}
-	ptr->fi->title = strndup(mrss->title, strlen(mrss->title));
-	ptr->fi->description = strndup(mrss->description, strlen(mrss->description));
-	ptr->fi->link = strndup(mrss->link, strlen(mrss->link));
-	if (mrss->about) {
-		ptr->fi->about = strndup(mrss->about, strlen(mrss->about));
-	} else {
-		ptr->fi->about = NULL;
-	}
+	strncpy(ptr->fi->title, mrss->title, BUFSIZE);
+	if (mrss->description)
+		strncpy(ptr->fi->description, mrss->description, BUFSIZE);
+	if (mrss->link)
+		strncpy(ptr->fi->link, mrss->link, BUFSIZE);
+	if (mrss->about) 
+		strncpy(ptr->fi->about, mrss->about, BUFSIZE);
 	ptr->fi->setup = 1;
 	mrss_free(mrss);
 	lnode_create_append(lofeeds, ptr->fi);
+	/* save it to our DB */
+	DBAStore("feeds", ptr->fi->feedurl, (void *)ptr->fi, sizeof(feedinfo));
 	irc_prefmsg(feed_bot, ptr->c, "%s has been added to Feed List", ptr->fi->title);
 	return;	
 }
@@ -698,8 +706,10 @@ int ModInit( void )
 	lnode_t *node;
 	SET_SEGV_LOCATION();
 	lofeeds = list_create( LISTCOUNT_T_MAX );
-	subscribedfeeds = list_create (LISTCOUNT_T_MAX );
-	DBAFetchRows("feeds", load_feeds);
+	subscribedfeeds = hash_create (HASHCOUNT_T_MAX, NULL, NULL);
+	/* XXX hard coded? */
+	feed.interval = 60;
+	DBAFetchRows2("feeds", load_feeds);
 	/* if lofeeds count is 0, this is probably a first time load, so load from text file */
 	if (list_count(lofeeds) <= 0)  {
 		feeds = os_fopen("data/feeds.dat", "r");
@@ -708,7 +718,7 @@ int ModInit( void )
 		} else {
 			while (os_fgets(buf, BUFSIZE, feeds)) {
 				fi = os_malloc(sizeof(feedinfo));
-				strncpy(fi->feedurl, buf, BUFSIZE);
+				strncpy(fi->feedurl, trim(buf), BUFSIZE);
 				fi->setup = 0;
 				lnode_create_append(lofeeds, fi);	
 			}
@@ -737,7 +747,6 @@ int ModSynch (void)
 {
 	SET_SEGV_LOCATION();
 	feed_bot = AddBot (&feed_botinfo);
-	ScheduleFeeds();
 	return NS_SUCCESS;
 }
 
