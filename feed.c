@@ -32,6 +32,8 @@ static int feed_cmd_del( const CmdParams *cmdparams );
 static int feed_cmd_info( const CmdParams *cmdparams );
 static int feed_set_exclusions_cb( const CmdParams *cmdparams, SET_REASON reason );
 static int feed_cmd_subscribe(const CmdParams *cmdparams);
+static int fs_subscribe_list(Client *c, char *what);
+static int fs_signoff_user(const CmdParams *cmdparams);
 static void FeedDownLoadHandler(void *ptr, int status, char *data, int datasize);
 static void FeedRequestHandler(void *usrptr, int status, char *data, int datasize);
 
@@ -142,6 +144,8 @@ static BotInfo feed_botinfo =
 
 ModuleEvent module_events[] = 
 {
+	{ EVENT_QUIT, fs_signoff_user, 0},
+	{ EVENT_KILL, fs_signoff_user, 0},
 	NS_EVENT_END()
 };
 
@@ -404,6 +408,11 @@ static int feed_cmd_subscribe(const CmdParams *cmdparams)
 	int get = 0;
 	SET_SEGV_LOCATION();
 
+	if (!strcasecmp("list", cmdparams->av[0])) {
+		fs_subscribe_list(cmdparams->source, cmdparams->ac == 2 ? cmdparams->av[1] : NULL);
+		return NS_SUCCESS;
+	}
+
 	get = atoi(cmdparams->av[0]);
 	
 	node = list_first(lofeeds);
@@ -451,6 +460,7 @@ static int fs_subscribe(Client *C, feedinfo *fi) {
 	SET_SEGV_LOCATION();
 	hnode_t *hnode;
 	subscribed *sub;
+	hash_t *userhash;
 	hnode = hnode_find(subscribedfeeds, fi->feedurl);
 	if (!hnode) {
 		/* its a new subscription for feeds */
@@ -469,6 +479,13 @@ static int fs_subscribe(Client *C, feedinfo *fi) {
 	}
 	/* subscribe this user */
 	hnode_create_insert(sub->users, C->name, C->name);
+	/* store this feed in the users feed list */
+	userhash = (hash_t *) GetUserModValue(C);
+	if (!userhash) {
+		userhash = hash_create(HASHCOUNT_T_MAX, NULL, NULL);
+		SetUserModValue(C, userhash);
+	}
+	hnode_create_insert(userhash, sub, sub->feed->feedurl);
 	DBAStore("feedsusers", sub->feed->feedurl, (void *)C->name, sizeof(C->name));
 	if (!FindTimer("CheckSubscriptions")) {
 		/* timer is not active */
@@ -477,6 +494,70 @@ static int fs_subscribe(Client *C, feedinfo *fi) {
 	}
 	return NS_SUCCESS;
 }
+
+/** @brief fs_subscribe_list
+ *
+ *  display list of subscribed feeds
+ *
+ *  @cmdparams pointer to the client
+ *  @cmdparams optional channel name
+ *
+ *  @return NS_SUCCESS if suceeds else NS_FAILURE
+ */
+
+static int fs_subscribe_list(Client *c, char *what) {
+
+}
+
+/** @brief fs_signoff_user
+ *
+ *  signoff a user and delete any subscribed feeds he has
+ *
+ *  @cmdparams pointer to the client
+ *
+ *  @return NS_SUCCESS if suceeds else NS_FAILURE
+ */
+
+static int fs_signoff_user(const CmdParams *cmdparams) {
+	hash_t *userhash;
+	hnode_t *hnode, *subfeednode, *usernode;
+
+	hscan_t hscan;
+	subscribed *sub;
+	userhash = (hash_t *) GetUserModValue(cmdparams->source);
+	if (!userhash) 
+		return NS_SUCCESS;
+	/* else, cycle through all the feeds and unsub them */
+	hash_scan_begin(&hscan, userhash);
+	while ((hnode = hash_scan_next(&hscan)) != NULL) {
+		sub = hnode_get(hnode);
+		/* find the feed in the subscribed feeds hash */
+		subfeednode = hnode_find(subscribedfeeds, sub->feed->feedurl);
+			if (!subfeednode) {
+			 	nlog(LOG_WARNING, "Subscribers Feed Inconsistancies");
+				continue;
+			}
+			/* if the count of users is 1 and chans is 0, then we can just remove the subscription */
+			if ((hash_count(sub->users) == 1) && (hash_count(sub->chans) == 0)) {
+printf("%s\n", sub->feed->feedurl);
+printf("%s\n", hnode_getkey(subfeednode));
+				hash_delete_destroy_node(subscribedfeeds, subfeednode);
+			} else {
+				/* the feed is more complex */
+				usernode = hnode_find(sub->users, cmdparams->source->name);
+				if (usernode) {
+					hash_delete_destroy_node(sub->users, usernode);
+				} else {
+					nlog(LOG_WARNING, "Subscribers Users Hash is busted");
+				}
+			}								
+	}
+	hash_destroy(userhash);
+	ClearUserModValue(cmdparams->source);
+	return NS_SUCCESS;
+
+}
+
 
 /** @brief feed_set_exclusions_cb
  *
